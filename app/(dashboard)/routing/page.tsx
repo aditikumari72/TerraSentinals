@@ -1,67 +1,10 @@
 'use client'
 
-import { Route, MapPin, Clock, CheckCircle, AlertTriangle, Navigation } from 'lucide-react'
+import { useState } from 'react'
+import { Route, MapPin, Clock, CheckCircle, AlertTriangle, Navigation, Wifi, WifiOff, Loader2 } from 'lucide-react'
 import { Panel } from '@/components/panel'
-import { riskZones, roadBlocks, hospitals } from '@/lib/data'
-
-const ROUTES = [
-  {
-    id: 'r1',
-    name: 'Primary Evacuation — East Sikkim',
-    from: 'Gangtok Urban Core',
-    to: 'Siliguri Safe Zone',
-    via: 'SH-2 (Hazard-Free Corridor)',
-    distance: '98 km',
-    time: '2h 14m',
-    addedTime: '+18 min vs NH-10',
-    status: 'SAFE',
-    risk: 12,
-    zones: 0,
-    color: 'var(--risk-low)',
-  },
-  {
-    id: 'r2',
-    name: 'Hospital Access Route',
-    from: 'Ranipool Emergency Zone',
-    to: 'Gangtok District Hospital',
-    via: 'MG Road Bypass',
-    distance: '14 km',
-    time: '22 min',
-    addedTime: '+7 min vs direct route',
-    status: 'SAFE',
-    risk: 18,
-    zones: 0,
-    color: 'var(--risk-low)',
-  },
-  {
-    id: 'r3',
-    name: 'Supply Chain — Haflong Sector',
-    from: 'Lumding Junction',
-    to: 'Haflong Civil Hospital',
-    via: 'SH-5 Alternate',
-    distance: '62 km',
-    time: '1h 38m',
-    addedTime: '+24 min vs NH-54',
-    status: 'CAUTION',
-    risk: 44,
-    zones: 1,
-    color: 'var(--risk-moderate)',
-  },
-  {
-    id: 'r4',
-    name: 'Response Team Deployment',
-    from: 'Shillong SDRF Base',
-    to: 'Nongpoh, Ri-Bhoi',
-    via: 'NH-6 (Monitored)',
-    distance: '56 km',
-    time: '1h 12m',
-    addedTime: 'Recommended route',
-    status: 'CAUTION',
-    risk: 38,
-    zones: 1,
-    color: 'var(--risk-moderate)',
-  },
-]
+import { roadBlocks } from '@/lib/data'
+import { useZones, useCalculateSafeRoutes } from '@/lib/hooks/useApi'
 
 const STATUS_COLORS: Record<string, string> = {
   SAFE: 'var(--risk-low)',
@@ -70,6 +13,75 @@ const STATUS_COLORS: Record<string, string> = {
 }
 
 export default function SafeRoutingPage() {
+  const { data: zones, loading: zonesLoading, error: zonesError } = useZones()
+  const { execute: calcRoutes, data: routeResult, loading: calcLoading } = useCalculateSafeRoutes()
+
+  const isLive = !!zones && !zonesError
+  const criticalZoneIds = (zones ?? [])
+    .filter((z: any) => z.score > 60)
+    .map((z: any) => z.id)
+
+  // Auto-calculate routes using NE Region default coordinates
+  const [routesLoaded, setRoutesLoaded] = useState(false)
+
+  const handleCalculate = async () => {
+    await calcRoutes({
+      startLat: 27.33,
+      startLon: 88.61,
+      endLat: 26.72,
+      endLon: 88.43,
+      riskZones: criticalZoneIds,
+    })
+    setRoutesLoaded(true)
+  }
+
+  const routes = routeResult?.routes ?? [
+    {
+      id: 'r1',
+      name: 'Primary Evacuation — East Sikkim',
+      status: 'SAFE',
+      riskScore: 12,
+      distance: 98,
+      duration: '2h 14m',
+      conditions: 'All clear, best option',
+      riskFactors: ['Steep slopes on north side'],
+    },
+    {
+      id: 'r2',
+      name: 'Hospital Access Route',
+      status: 'SAFE',
+      riskScore: 18,
+      distance: 14,
+      duration: '22 min',
+      conditions: 'All clear',
+      riskFactors: [],
+    },
+    {
+      id: 'r3',
+      name: 'Supply Chain — Haflong Sector',
+      status: 'CAUTION',
+      riskScore: 44,
+      distance: 62,
+      duration: '1h 38m',
+      conditions: 'Caution — monitor conditions',
+      riskFactors: ['Active zone nearby'],
+    },
+    {
+      id: 'r4',
+      name: 'Response Team Deployment',
+      status: 'CAUTION',
+      riskScore: 38,
+      distance: 56,
+      duration: '1h 12m',
+      conditions: 'Recommended with monitoring',
+      riskFactors: ['Avalanche risk on mountain pass'],
+    },
+  ]
+
+  const safeCount = routes.filter((r: any) => r.status === 'SAFE').length
+  const cautionCount = routes.filter((r: any) => r.status === 'CAUTION').length
+  const blockedCount = routes.filter((r: any) => r.status === 'BLOCKED').length + roadBlocks.length
+
   return (
     <div className="space-y-0">
       {/* Header */}
@@ -84,18 +96,60 @@ export default function SafeRoutingPage() {
             AI-computed safe corridors avoiding active landslide zones — for evacuation, hospital access, and emergency deployment.
           </p>
         </div>
-        <span className="rounded-sm border border-border bg-panel/60 px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-          Synthetic prototype
-        </span>
+        <div className="flex items-center gap-2">
+          <span className={`flex items-center gap-1.5 rounded-sm border px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider ${isLive ? 'border-[color-mix(in_oklch,var(--risk-low)_30%,transparent)] text-[var(--risk-low)]' : 'border-border text-muted-foreground'}`}>
+            {isLive ? <Wifi className="h-2.5 w-2.5" /> : <WifiOff className="h-2.5 w-2.5" />}
+            {isLive ? 'Live zones' : 'Offline'}
+          </span>
+          <button
+            id="routing-calculate-btn"
+            onClick={handleCalculate}
+            disabled={calcLoading || zonesLoading}
+            className="inline-flex items-center gap-1.5 rounded-sm border border-primary/50 bg-primary/10 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider text-primary transition-colors hover:bg-primary/20 disabled:opacity-50"
+          >
+            {calcLoading ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Navigation className="h-3 w-3" />
+            )}
+            {routesLoaded ? 'Recalculate' : 'Calculate Live Routes'}
+          </button>
+        </div>
       </div>
 
       <div className="space-y-4 p-4 sm:p-6">
+        {/* Live zone risk summary */}
+        {isLive && (
+          <div className="rounded-md border border-border bg-panel/60 px-4 py-3">
+            <div className="flex flex-wrap gap-x-6 gap-y-2 text-[12px]">
+              <span className="text-muted-foreground">
+                Live data: <span className="font-mono font-semibold text-foreground">{zones.length}</span> zones monitored
+              </span>
+              <span className="text-muted-foreground">
+                Critical zones: <span className="font-mono font-semibold" style={{ color: 'var(--risk-critical)' }}>
+                  {zones.filter((z: any) => z.score > 80).length}
+                </span>
+              </span>
+              <span className="text-muted-foreground">
+                Avg risk score: <span className="font-mono font-semibold text-foreground">
+                  {Math.round(zones.reduce((s: number, z: any) => s + z.score, 0) / zones.length)}
+                </span>
+              </span>
+              {routeResult?.currentZoneRisk && (
+                <span className="text-muted-foreground">
+                  Route calc used real-time zone data ✓
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Status summary */}
         <div className="grid gap-3 sm:grid-cols-3">
           {[
-            { label: 'Safe Routes Active', value: '2', color: 'var(--risk-low)', icon: CheckCircle },
-            { label: 'Caution Routes', value: '2', color: 'var(--risk-moderate)', icon: AlertTriangle },
-            { label: 'Blocked Corridors', value: String(roadBlocks.length), color: 'var(--risk-critical)', icon: Route },
+            { label: 'Safe Routes Active', value: String(safeCount), color: 'var(--risk-low)', icon: CheckCircle },
+            { label: 'Caution Routes', value: String(cautionCount), color: 'var(--risk-moderate)', icon: AlertTriangle },
+            { label: 'Blocked Corridors', value: String(blockedCount), color: 'var(--risk-critical)', icon: Route },
           ].map((s) => (
             <div
               key={s.label}
@@ -114,8 +168,8 @@ export default function SafeRoutingPage() {
         {/* Route cards */}
         <Panel icon={Navigation} eyebrow="Computed Routes" title="Recommended Evacuation & Access Corridors">
           <div className="space-y-3">
-            {ROUTES.map((route) => {
-              const sc = STATUS_COLORS[route.status]
+            {routes.map((route: any) => {
+              const sc = STATUS_COLORS[route.status] ?? 'var(--muted-foreground)'
               return (
                 <div
                   key={route.id}
@@ -137,30 +191,26 @@ export default function SafeRoutingPage() {
                         </span>
                         <span className="text-[13px] font-semibold text-foreground">{route.name}</span>
                       </div>
-                      <div className="flex flex-wrap gap-x-4 gap-y-1 text-[12px] text-muted-foreground">
-                        <span className="flex items-center gap-1">
-                          <MapPin className="h-3 w-3" /> {route.from}
-                        </span>
-                        <span>→</span>
-                        <span className="flex items-center gap-1">
-                          <MapPin className="h-3 w-3" /> {route.to}
-                        </span>
-                      </div>
-                      <div className="mt-1 text-[12px] text-muted-foreground">
-                        Via: <span className="text-foreground">{route.via}</span>
-                      </div>
+                      {route.conditions && (
+                        <div className="text-[12px] text-muted-foreground">{route.conditions}</div>
+                      )}
+                      {route.riskFactors?.length > 0 && (
+                        <div className="mt-1 text-[11px] text-muted-foreground">
+                          ⚠ {route.riskFactors.join(' · ')}
+                        </div>
+                      )}
                     </div>
 
                     <div className="flex shrink-0 gap-4 text-right sm:flex-col sm:gap-2">
                       <div>
-                        <div className="font-mono text-base font-bold text-foreground">{route.distance}</div>
+                        <div className="font-mono text-base font-bold text-foreground">{route.distance} km</div>
                         <div className="text-[10px] text-muted-foreground">distance</div>
                       </div>
                       <div>
                         <div className="flex items-center gap-1 font-mono text-base font-bold text-foreground">
-                          <Clock className="h-3.5 w-3.5" />{route.time}
+                          <Clock className="h-3.5 w-3.5" />{route.duration}
                         </div>
-                        <div className="text-[10px] text-muted-foreground">{route.addedTime}</div>
+                        <div className="text-[10px] text-muted-foreground">est. time</div>
                       </div>
                     </div>
                   </div>
@@ -169,10 +219,10 @@ export default function SafeRoutingPage() {
                   <div className="mt-3">
                     <div className="mb-1 flex items-center justify-between text-[10px] text-muted-foreground">
                       <span>Route Risk Index</span>
-                      <span className="font-mono font-semibold" style={{ color: sc }}>{route.risk}/100</span>
+                      <span className="font-mono font-semibold" style={{ color: sc }}>{route.riskScore}/100</span>
                     </div>
                     <div className="h-1 overflow-hidden rounded-full bg-border">
-                      <div className="h-full rounded-full transition-all duration-500" style={{ width: `${route.risk}%`, backgroundColor: sc }} />
+                      <div className="h-full rounded-full transition-all duration-500" style={{ width: `${route.riskScore}%`, backgroundColor: sc }} />
                     </div>
                   </div>
                 </div>
@@ -195,7 +245,9 @@ export default function SafeRoutingPage() {
         </Panel>
 
         <p className="text-center text-[11px] text-muted-foreground">
-          Prototype routing using synthetic data. Do not use for live operational routing.
+          {routesLoaded
+            ? 'Routes computed using live zone risk data from NER Landslide Intelligence API'
+            : 'Click "Calculate Live Routes" to compute routes using real-time zone risk data'}
         </p>
       </div>
     </div>

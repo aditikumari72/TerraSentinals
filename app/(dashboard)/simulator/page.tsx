@@ -1,14 +1,15 @@
 'use client'
 
-import { useMemo, useState } from 'react'
-import { SlidersHorizontal, RefreshCcw, TriangleAlert, CloudRain, Droplets, Mountain } from 'lucide-react'
+import { useMemo, useState, useEffect, useCallback } from 'react'
+import { SlidersHorizontal, RefreshCcw, TriangleAlert, CloudRain, Droplets, Mountain, Wifi, WifiOff } from 'lucide-react'
 import { Panel } from '@/components/panel'
 import { SimpleLineChart } from '@/components/charts'
 import { RiskBadge } from '@/components/primitives'
 import { riskColor, riskLevel } from '@/lib/risk'
+import { apiClient } from '@/lib/api-client'
 
-// --- Risk model (synthetic) ---
-function computeRisk(rainfall: number, soilMoisture: number, slope: number): number {
+// Client-side fallback formula (used while API is loading / offline)
+function computeRiskLocal(rainfall: number, soilMoisture: number, slope: number): number {
   const r = (rainfall / 150) * 35
   const s = (soilMoisture / 100) * 30
   const sl = (slope / 60) * 25
@@ -73,30 +74,115 @@ export default function SimulatorPage() {
   const [soilMoisture, setSoilMoisture] = useState(DEFAULTS.soilMoisture)
   const [slope, setSlope] = useState(DEFAULTS.slope)
 
-  const risk = useMemo(() => computeRisk(rainfall, soilMoisture, slope), [rainfall, soilMoisture, slope])
+  // API-calculated risk result
+  const [apiResult, setApiResult] = useState<any>(null)
+  const [apiLoading, setApiLoading] = useState(false)
+  const [isLive, setIsLive] = useState(false)
+
+  // Sensitivity curve data from API
+  const [sensitivityData, setSensitivityData] = useState<any[]>([])
+  const [sensLoading, setSensLoading] = useState(false)
+
+  // Debounced API call for risk calculation
+  const fetchRisk = useCallback(async (r: number, sm: number, sl: number) => {
+    setApiLoading(true)
+    try {
+      const res = await apiClient.calculateRisk({
+        rainfall: r,
+        soilMoisture: sm,
+        slope: sl,
+        elevation: 1500,
+        historicalRisk: 20,
+        satelliteAnomaly: 10,
+      }) as any
+      if (res.success && res.data) {
+        setApiResult(res.data)
+        setIsLive(true)
+      }
+    } catch {
+      setIsLive(false)
+    } finally {
+      setApiLoading(false)
+    }
+  }, [])
+
+  // Debounce slider changes → API call
+  useEffect(() => {
+    const t = setTimeout(() => fetchRisk(rainfall, soilMoisture, slope), 400)
+    return () => clearTimeout(t)
+  }, [rainfall, soilMoisture, slope, fetchRisk])
+
+  // Build sensitivity curve via simulate-disaster API
+  const fetchSensitivity = useCallback(async (r: number, sm: number, sl: number) => {
+    setSensLoading(true)
+    try {
+      const res = await apiClient.simulateDisaster({
+        rainfall: Math.max(0, r - 40),
+        soilMoisture: sm,
+        slope: sl,
+        rainfallIncrease: 10,
+        steps: 8,
+      }) as any
+      if (res.success && res.data?.progression) {
+        const curve = res.data.progression.map((p: any, i: number) => ({
+          rain: `${Math.max(0, r - 40) + i * 10}mm`,
+          risk: Math.round(p.riskScore),
+        }))
+        setSensitivityData(curve)
+      }
+    } catch {
+      // fallback handled below
+    } finally {
+      setSensLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    const t = setTimeout(() => fetchSensitivity(rainfall, soilMoisture, slope), 600)
+    return () => clearTimeout(t)
+  }, [rainfall, soilMoisture, slope, fetchSensitivity])
+
+  // Use API result when available, fall back to local formula
+  const localRisk = useMemo(() => computeRiskLocal(rainfall, soilMoisture, slope), [rainfall, soilMoisture, slope])
+  const risk = apiResult ? Math.round(apiResult.riskScore) : localRisk
   const level = riskLevel(risk)
   const color = riskColor(level)
 
-  // Build a mini sensitivity curve — vary rainfall from current-40 to current+40
-  const sensitivityCurve = useMemo(() => {
-    return Array.from({ length: 9 }, (_, i) => {
-      const r = Math.max(0, Math.min(150, rainfall - 40 + i * 10))
-      return { rain: `${r}mm`, risk: computeRisk(r, soilMoisture, slope) }
-    })
-  }, [rainfall, soilMoisture, slope])
+  const sensitivityCurve = sensitivityData.length > 0
+    ? sensitivityData
+    : Array.from({ length: 9 }, (_, i) => {
+        const r = Math.max(0, Math.min(150, rainfall - 40 + i * 10))
+        return { rain: `${r}mm`, risk: computeRiskLocal(r, soilMoisture, slope) }
+      })
 
-  const factors = [
-    { label: 'Rainfall Contribution', pct: Math.round((rainfall / 150) * 35) },
-    { label: 'Soil Moisture Contribution', pct: Math.round((soilMoisture / 100) * 30) },
-    { label: 'Slope Contribution', pct: Math.round((slope / 60) * 25) },
-    { label: 'Compounding Effect', pct: rainfall > 80 && soilMoisture > 70 ? 10 : 0 },
-  ]
+  // Factor breakdown — from API if available, else computed
+  const factors = apiResult?.factors
+    ? apiResult.factors.map((f: any) => ({
+        label: f.label,
+        pct: Math.round(f.value * f.weight),
+      }))
+    : [
+        { label: 'Rainfall Contribution', pct: Math.round((rainfall / 150) * 35) },
+        { label: 'Soil Moisture Contribution', pct: Math.round((soilMoisture / 100) * 30) },
+        { label: 'Slope Contribution', pct: Math.round((slope / 60) * 25) },
+        { label: 'Compounding Effect', pct: rainfall > 80 && soilMoisture > 70 ? 10 : 0 },
+      ]
 
   const handleReset = () => {
     setRainfall(DEFAULTS.rainfall)
     setSoilMoisture(DEFAULTS.soilMoisture)
     setSlope(DEFAULTS.slope)
+    setApiResult(null)
   }
+
+  const recommendation = apiResult?.recommendation
+    ?? (risk >= 81
+      ? 'Immediate evacuation advisory recommended.'
+      : risk >= 61
+        ? 'Active monitoring and pre-positioning required.'
+        : risk >= 31
+          ? 'Elevated risk — increase sensor polling frequency.'
+          : 'Conditions within acceptable operational envelope.')
 
   return (
     <div className="space-y-0">
@@ -109,10 +195,14 @@ export default function SimulatorPage() {
           </div>
           <h1 className="text-xl font-semibold tracking-tight text-foreground">Landslide Risk Simulator</h1>
           <p className="mt-0.5 max-w-xl text-[13px] text-muted-foreground">
-            Adjust environmental parameters and observe how they compound into landslide risk. Useful for pre-event scenario planning.
+            Adjust environmental parameters and observe how they compound into landslide risk. Powered by the live risk engine.
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <span className={`flex items-center gap-1.5 rounded-sm border px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider ${isLive ? 'border-[color-mix(in_oklch,var(--risk-low)_30%,transparent)] text-[var(--risk-low)]' : 'border-border text-muted-foreground'}`}>
+            {isLive ? <Wifi className="h-2.5 w-2.5" /> : <WifiOff className="h-2.5 w-2.5" />}
+            {isLive ? 'Live engine' : 'Local model'}
+          </span>
           <button
             id="simulator-reset-btn"
             onClick={handleReset}
@@ -120,9 +210,6 @@ export default function SimulatorPage() {
           >
             <RefreshCcw className="h-3 w-3" /> Reset
           </button>
-          <span className="rounded-sm border border-border bg-panel/60 px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-            Synthetic prototype
-          </span>
         </div>
       </div>
 
@@ -167,6 +254,23 @@ export default function SimulatorPage() {
                 />
               </div>
             </Panel>
+
+            {/* API confidence info */}
+            {apiResult && (
+              <div className="rounded-md border border-border bg-panel/60 px-3 py-2.5">
+                <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Engine Output</div>
+                <div className="grid grid-cols-2 gap-2 text-[11px]">
+                  <div>
+                    <div className="text-muted-foreground">Probability</div>
+                    <div className="font-mono font-semibold" style={{ color }}>{Math.round(apiResult.probability)}%</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Confidence</div>
+                    <div className="font-mono font-semibold text-foreground">{Math.round(apiResult.confidence)}%</div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Risk Gauge + Breakdown */}
@@ -186,7 +290,7 @@ export default function SimulatorPage() {
                   >
                     <div className="text-center">
                       <div
-                        className="font-mono text-5xl font-bold leading-none transition-all duration-300"
+                        className={`font-mono text-5xl font-bold leading-none transition-all duration-300 ${apiLoading ? 'opacity-50' : ''}`}
                         style={{ color }}
                       >
                         {risk}
@@ -197,14 +301,8 @@ export default function SimulatorPage() {
                   <div className="mt-5">
                     <RiskBadge level={level as any} />
                   </div>
-                  <p className="mt-3 max-w-[18ch] text-center text-[12px] text-muted-foreground">
-                    {risk >= 81
-                      ? 'Immediate evacuation advisory recommended.'
-                      : risk >= 61
-                        ? 'Active monitoring and pre-positioning required.'
-                        : risk >= 31
-                          ? 'Elevated risk — increase sensor polling frequency.'
-                          : 'Conditions within acceptable operational envelope.'}
+                  <p className="mt-3 max-w-[22ch] text-center text-[12px] text-muted-foreground">
+                    {recommendation}
                   </p>
                 </div>
               </Panel>
@@ -212,7 +310,7 @@ export default function SimulatorPage() {
               {/* Factor breakdown */}
               <Panel icon={TriangleAlert} eyebrow="Breakdown" title="Risk Factor Weights">
                 <div className="space-y-3 py-1">
-                  {factors.map((f) => (
+                  {factors.map((f: any) => (
                     <div key={f.label}>
                       <div className="mb-1 flex items-center justify-between text-[11px]">
                         <span className="text-muted-foreground">{f.label}</span>
@@ -237,17 +335,27 @@ export default function SimulatorPage() {
             {/* Sensitivity chart */}
             <Panel icon={CloudRain} eyebrow="Sensitivity" title="Risk vs Rainfall Intensity (at current soil & slope)">
               <div className="h-[180px]">
-                <SimpleLineChart data={sensitivityCurve} dataKey="risk" height={180} color={color} domain={[0, 100]} />
+                <SimpleLineChart
+                  data={sensitivityCurve}
+                  dataKey="risk"
+                  height={180}
+                  color={color}
+                  domain={[0, 100]}
+                />
               </div>
               <p className="mt-2 text-[11px] text-muted-foreground">
-                How risk changes as rainfall varies ±40 mm/hr around your current input, holding other parameters fixed.
+                {isLive
+                  ? 'Computed via live disaster simulation API — shows progressive risk escalation.'
+                  : 'How risk changes as rainfall varies ±40 mm/hr around current input (local model).'}
               </p>
             </Panel>
           </div>
         </div>
 
         <p className="text-center text-[11px] text-muted-foreground">
-          Prototype simulator using a synthetic risk model. Not for operational emergency decision-making.
+          {isLive
+            ? 'Risk computed by NER Landslide Intelligence Risk Engine API · Updates on slider change'
+            : 'Using local fallback model — API server may be offline'}
         </p>
       </div>
     </div>

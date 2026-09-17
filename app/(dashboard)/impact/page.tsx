@@ -1,15 +1,52 @@
 'use client'
 
-import { Activity, Users, Building2, Truck, Route, TriangleAlert } from 'lucide-react'
+import { Activity, Users, Building2, Truck, Route, TriangleAlert, Wifi, WifiOff } from 'lucide-react'
 import { Panel } from '@/components/panel'
 import { RiskBadge } from '@/components/primitives'
-import { riskZones, mapIncidents, hospitals, roadBlocks } from '@/lib/data'
+import { hospitals, roadBlocks } from '@/lib/data'
 import { riskColor, riskLevel } from '@/lib/risk'
+import { useZones, useIncidents } from '@/lib/hooks/useApi'
+import type { RiskZone } from '@/lib/data'
+
+function SkeletonRow() {
+  return (
+    <div className="flex items-center gap-3 rounded-md border border-border bg-background/40 px-3 py-2.5 animate-pulse">
+      <div className="h-4 w-4 rounded-full bg-border" />
+      <div className="flex-1 space-y-1">
+        <div className="h-3 w-32 rounded bg-border" />
+        <div className="h-2 w-20 rounded bg-border/60" />
+      </div>
+      <div className="h-4 w-12 rounded bg-border" />
+    </div>
+  )
+}
 
 export default function ImpactAnalysisPage() {
-  const totalPop = riskZones.reduce((s, z) => s + z.population, 0)
+  const { data: apiZones, loading: zonesLoading, error: zonesError } = useZones()
+  const { data: apiIncidents, loading: incidentsLoading } = useIncidents()
+
+  // Map API zone shape → frontend RiskZone shape
+  const riskZones: RiskZone[] = (apiZones ?? []).map((z: any) => ({
+    id: z.id,
+    name: z.name,
+    state: z.state,
+    district: z.district,
+    score: z.score,
+    probability: z.probability,
+    confidence: z.confidence,
+    population: z.population,
+    x: ((z.longitude - 88) / 10) * 100,
+    y: ((30 - z.latitude) / 7) * 100,
+    factors: z.factors,
+  }))
+
+  const isLive = !!apiZones && !zonesError
+  const isLoading = zonesLoading || incidentsLoading
+
+  const totalPop = riskZones.reduce((s, z) => s + (z.population || 0), 0)
   const criticalZones = riskZones.filter((z) => z.score >= 81)
   const highZones = riskZones.filter((z) => z.score >= 61 && z.score < 81)
+  const activeIncidents = (apiIncidents ?? []).filter((i: any) => i.status !== 'resolved')
 
   return (
     <div className="space-y-0">
@@ -25,8 +62,9 @@ export default function ImpactAnalysisPage() {
             People exposed, infrastructure at risk, and projected cascading effects across the North Eastern Region.
           </p>
         </div>
-        <span className="rounded-sm border border-border bg-panel/60 px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-          Synthetic data
+        <span className={`flex items-center gap-1.5 rounded-sm border px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider ${isLive ? 'border-[color-mix(in_oklch,var(--risk-low)_30%,transparent)] text-[var(--risk-low)]' : 'border-border text-muted-foreground'}`}>
+          {isLive ? <Wifi className="h-2.5 w-2.5" /> : <WifiOff className="h-2.5 w-2.5" />}
+          {isLive ? 'Live data' : 'Loading…'}
         </span>
       </div>
 
@@ -34,10 +72,10 @@ export default function ImpactAnalysisPage() {
         {/* Summary KPIs */}
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {[
-            { label: 'Total People Exposed', value: totalPop.toLocaleString(), icon: Users, color: 'var(--risk-critical)' },
-            { label: 'Critical Zones', value: String(criticalZones.length), icon: TriangleAlert, color: 'var(--risk-critical)' },
-            { label: 'High Risk Zones', value: String(highZones.length), icon: Activity, color: 'var(--risk-high)' },
-            { label: 'Active Incidents', value: String(mapIncidents.length), icon: TriangleAlert, color: 'var(--risk-high)' },
+            { label: 'Total People Exposed', value: isLoading ? '…' : totalPop.toLocaleString(), icon: Users, color: 'var(--risk-critical)' },
+            { label: 'Critical Zones', value: isLoading ? '…' : String(criticalZones.length), icon: TriangleAlert, color: 'var(--risk-critical)' },
+            { label: 'High Risk Zones', value: isLoading ? '…' : String(highZones.length), icon: Activity, color: 'var(--risk-high)' },
+            { label: 'Active Incidents', value: isLoading ? '…' : String(activeIncidents.length), icon: TriangleAlert, color: 'var(--risk-high)' },
           ].map((k) => (
             <div
               key={k.label}
@@ -57,25 +95,29 @@ export default function ImpactAnalysisPage() {
           {/* Zones at risk */}
           <Panel icon={TriangleAlert} eyebrow="Population" title="Exposed Zones by Risk Score">
             <div className="space-y-2">
-              {[...riskZones].sort((a, b) => b.score - a.score).map((z) => {
-                const color = riskColor(riskLevel(z.score))
-                return (
-                  <div key={z.id} className="flex items-center gap-3 rounded-md border border-border bg-background/40 px-3 py-2.5">
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[13px] font-semibold text-foreground">{z.name}</div>
-                      <div className="text-[11px] text-muted-foreground">{z.district}, {z.state}</div>
+              {isLoading ? (
+                Array.from({ length: 5 }).map((_, i) => <SkeletonRow key={i} />)
+              ) : (
+                [...riskZones].sort((a, b) => b.score - a.score).map((z) => {
+                  const color = riskColor(riskLevel(z.score))
+                  return (
+                    <div key={z.id} className="flex items-center gap-3 rounded-md border border-border bg-background/40 px-3 py-2.5">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13px] font-semibold text-foreground">{z.name}</div>
+                        <div className="text-[11px] text-muted-foreground">{z.district}, {z.state}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-mono text-[11px] text-muted-foreground">{z.population.toLocaleString()} people</div>
+                        <RiskBadge score={z.score} />
+                      </div>
+                      <div
+                        className="h-10 w-1.5 rounded-full"
+                        style={{ backgroundColor: color, boxShadow: `0 0 8px ${color}` }}
+                      />
                     </div>
-                    <div className="text-right">
-                      <div className="font-mono text-[11px] text-muted-foreground">{z.population.toLocaleString()} people</div>
-                      <RiskBadge score={z.score} />
-                    </div>
-                    <div
-                      className="h-10 w-1.5 rounded-full"
-                      style={{ backgroundColor: color, boxShadow: `0 0 8px ${color}` }}
-                    />
-                  </div>
-                )
-              })}
+                  )
+                })
+              )}
             </div>
           </Panel>
 
@@ -85,7 +127,7 @@ export default function ImpactAnalysisPage() {
               <div className="space-y-2">
                 {hospitals.map((h) => (
                   <div key={h.id} className="flex items-center gap-3 rounded-md border border-border bg-background/40 px-3 py-2.5">
-                    <Building2 className="h-4 w-4 shrink-0 text-risk-high" style={{ color: 'var(--risk-high)' }} />
+                    <Building2 className="h-4 w-4 shrink-0" style={{ color: 'var(--risk-high)' }} />
                     <div className="min-w-0 flex-1">
                       <div className="text-[13px] font-medium text-foreground">{h.name}</div>
                       <div className="text-[11px] text-muted-foreground">Risk of access disruption from active zones</div>
@@ -112,23 +154,28 @@ export default function ImpactAnalysisPage() {
                     </span>
                   </div>
                 ))}
-                <div className="flex items-center gap-3 rounded-md border border-border bg-background/40 px-3 py-2.5">
-                  <Route className="h-4 w-4 shrink-0" style={{ color: 'var(--risk-high)' }} />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[13px] font-medium text-foreground">NH-10 Alternate Detour</div>
-                    <div className="text-[11px] text-muted-foreground">Monitoring for potential secondary blockage</div>
+                {/* Live active incidents as additional entries */}
+                {activeIncidents.filter((i: any) => i.type === 'road_blocked').map((i: any) => (
+                  <div key={i.id} className="flex items-center gap-3 rounded-md border border-border bg-background/40 px-3 py-2.5">
+                    <Route className="h-4 w-4 shrink-0" style={{ color: 'var(--risk-high)' }} />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13px] font-medium text-foreground">{i.name}</div>
+                      <div className="text-[11px] text-muted-foreground">Reported — monitoring for secondary blockage</div>
+                    </div>
+                    <span className="rounded-sm border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider" style={{ color: 'var(--risk-high)', borderColor: 'color-mix(in oklch, var(--risk-high) 40%, transparent)' }}>
+                      Monitor
+                    </span>
                   </div>
-                  <span className="rounded-sm border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider" style={{ color: 'var(--risk-high)', borderColor: 'color-mix(in oklch, var(--risk-high) 40%, transparent)' }}>
-                    Monitor
-                  </span>
-                </div>
+                ))}
               </div>
             </Panel>
           </div>
         </div>
 
         <p className="text-center text-[11px] text-muted-foreground">
-          Prototype impact analysis using synthetic data. Not for operational emergency decision-making.
+          {isLive
+            ? `Live impact analysis · ${riskZones.length} zones · ${activeIncidents.length} active incidents`
+            : 'Prototype impact analysis using synthetic data. Not for operational emergency decision-making.'}
         </p>
       </div>
     </div>
