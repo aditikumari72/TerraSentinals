@@ -27,7 +27,9 @@ export interface Sensor {
     longitude: number;
     altitude: number;
     type: string;
-    status: 'active' | 'inactive' | 'error';
+    x: number;
+    y: number;
+    status: 'online' | 'degraded' | 'offline';
     lastReading?: {
         timestamp: string;
         rainfall: number;
@@ -40,7 +42,7 @@ export interface Incident {
     name: string;
     latitude: number;
     longitude: number;
-    type: 'landslide' | 'flood' | 'erosion';
+    type: 'landslide' | 'flood' | 'erosion' | 'rockfall' | 'road_blocked';
     severity: 'low' | 'moderate' | 'high' | 'critical';
     timestamp: string;
     casualties?: number;
@@ -78,9 +80,33 @@ declare class MockDataService {
     getIncidents(): Incident[];
     getAlerts(): Alert[];
     getWeatherData(): WeatherData;
-    updateWithRainfallScenario(rainfallIncrease: number): RiskZone[];
+    /** Historical trend data for the last 9 days */
+    getHistoricalTrends(): {
+        riskTrends: {
+            date: string;
+            score: number;
+        }[];
+        rainfallTrends: {
+            date: string;
+            rainfall: number;
+        }[];
+        soilMoistureTrends: {
+            date: string;
+            moisture: number;
+        }[];
+    };
+    /** Incident trend for last 7 days */
+    getIncidentTrend(): {
+        day: string;
+        incidents: number;
+        resolved: number;
+    }[];
     createIncident(incident: Partial<Incident>): Incident;
+    updateIncidentStatus(id: string, status: Incident['status']): Incident | null;
     createAlert(alert: Partial<Alert>): Alert;
+    resolveAlert(id: string): Alert | null;
+    /** Simulates rainfall-scenario risk escalation across all zones */
+    updateWithRainfallScenario(rainfallIncrease: number): RiskZone[];
 }
 export declare const mockDataService: MockDataService;
 export {};

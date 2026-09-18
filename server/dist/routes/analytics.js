@@ -3,21 +3,41 @@ import { mockDataService } from '../services/mockDataService.js';
 const router = Router();
 /**
  * GET /api/analytics/dashboard
- * Get dashboard analytics
+ * Aggregated dashboard analytics
  */
 router.get('/dashboard', (_req, res) => {
     try {
         const zones = mockDataService.getRiskZones();
         const incidents = mockDataService.getIncidents();
         const sensors = mockDataService.getSensors();
+        const alerts = mockDataService.getAlerts();
         const criticalZones = zones.filter((z) => z.score > 80).length;
         const highRiskZones = zones.filter((z) => z.score > 60 && z.score <= 80).length;
         const moderateRiskZones = zones.filter((z) => z.score > 30 && z.score <= 60).length;
         const lowRiskZones = zones.filter((z) => z.score <= 30).length;
-        const totalAffectedPopulation = zones.reduce((sum, z) => sum + z.population, 0);
+        const totalAffectedPopulation = zones
+            .filter((z) => z.score > 30)
+            .reduce((sum, z) => sum + z.population, 0);
         const totalIncidents = incidents.length;
         const resolvedIncidents = incidents.filter((i) => i.status === 'resolved').length;
-        const activeSensors = sensors.filter((s) => s.status === 'active').length;
+        const activeSensors = sensors.filter((s) => s.status === 'online').length;
+        const degradedSensors = sensors.filter((s) => s.status === 'degraded').length;
+        const offlineSensors = sensors.filter((s) => s.status === 'offline').length;
+        const unresolvedAlerts = alerts.filter((a) => !a.resolved).length;
+        // Risk by state
+        const riskByState = zones.map((z) => ({
+            state: z.state.length > 9 ? z.state.slice(0, 8) + '.' : z.state,
+            fullState: z.state,
+            risk: z.score,
+        }));
+        // Population exposure by state
+        const populationExposure = zones.map((z) => ({
+            state: z.state.length > 9 ? z.state.slice(0, 8) + '.' : z.state,
+            fullState: z.state,
+            people: z.population,
+        }));
+        // Incident trend (last 7 days)
+        const incidentTrend = mockDataService.getIncidentTrend();
         const analytics = {
             summary: {
                 totalZones: zones.length,
@@ -27,6 +47,7 @@ router.get('/dashboard', (_req, res) => {
                 lowRiskZones,
                 totalAffectedPopulation,
                 averageRiskScore: Math.round(zones.reduce((sum, z) => sum + z.score, 0) / zones.length),
+                unresolvedAlerts,
             },
             incidents: {
                 total: totalIncidents,
@@ -36,35 +57,37 @@ router.get('/dashboard', (_req, res) => {
                     landslide: incidents.filter((i) => i.type === 'landslide').length,
                     flood: incidents.filter((i) => i.type === 'flood').length,
                     erosion: incidents.filter((i) => i.type === 'erosion').length,
+                    rockfall: incidents.filter((i) => i.type === 'rockfall').length,
+                    road_blocked: incidents.filter((i) => i.type === 'road_blocked').length,
                 },
             },
             sensors: {
                 total: sensors.length,
-                active: activeSensors,
-                inactive: sensors.filter((s) => s.status === 'inactive').length,
-                error: sensors.filter((s) => s.status === 'error').length,
+                online: activeSensors,
+                degraded: degradedSensors,
+                offline: offlineSensors,
+                healthPercent: Math.round((activeSensors / sensors.length) * 100),
             },
             trends: {
-                riskTrend: 'increasing',
+                riskTrend: criticalZones > 1 ? 'increasing' : 'stable',
                 rainfallTrend: 'heavy',
                 soilMoistureTrend: 'rising',
             },
+            charts: {
+                riskByState,
+                populationExposure,
+                incidentTrend,
+            },
         };
-        res.json({
-            success: true,
-            data: analytics,
-        });
+        res.json({ success: true, data: analytics });
     }
     catch (error) {
-        res.status(500).json({
-            success: false,
-            error: 'Failed to fetch analytics',
-        });
+        res.status(500).json({ success: false, error: 'Failed to fetch analytics' });
     }
 });
 /**
  * GET /api/analytics/risk-distribution
- * Get risk distribution across zones
+ * Risk distribution across zones
  */
 router.get('/risk-distribution', (_req, res) => {
     try {
@@ -89,55 +112,21 @@ router.get('/risk-distribution', (_req, res) => {
         });
     }
     catch (error) {
-        res.status(500).json({
-            success: false,
-            error: 'Failed to fetch risk distribution',
-        });
+        res.status(500).json({ success: false, error: 'Failed to fetch risk distribution' });
     }
 });
 /**
  * GET /api/analytics/historical
- * Get historical trends
+ * Historical trends (last 9 days, dynamically dated)
  */
 router.get('/historical', (_req, res) => {
-    res.json({
-        success: true,
-        data: {
-            riskTrends: [
-                { date: '2026-08-15', score: 65 },
-                { date: '2026-08-16', score: 68 },
-                { date: '2026-08-17', score: 72 },
-                { date: '2026-08-18', score: 75 },
-                { date: '2026-08-19', score: 78 },
-                { date: '2026-08-20', score: 82 },
-                { date: '2026-08-21', score: 85 },
-                { date: '2026-08-22', score: 84 },
-                { date: '2026-08-23', score: 81 },
-            ],
-            rainfallTrends: [
-                { date: '2026-08-15', rainfall: 25 },
-                { date: '2026-08-16', rainfall: 32 },
-                { date: '2026-08-17', rainfall: 45 },
-                { date: '2026-08-18', rainfall: 55 },
-                { date: '2026-08-19', rainfall: 48 },
-                { date: '2026-08-20', rainfall: 52 },
-                { date: '2026-08-21', rainfall: 38 },
-                { date: '2026-08-22', rainfall: 35 },
-                { date: '2026-08-23', rainfall: 28 },
-            ],
-            soilMoistureTrends: [
-                { date: '2026-08-15', moisture: 45 },
-                { date: '2026-08-16', moisture: 52 },
-                { date: '2026-08-17', moisture: 58 },
-                { date: '2026-08-18', moisture: 65 },
-                { date: '2026-08-19', moisture: 68 },
-                { date: '2026-08-20', moisture: 72 },
-                { date: '2026-08-21', moisture: 70 },
-                { date: '2026-08-22', moisture: 68 },
-                { date: '2026-08-23', rainfall: 65 },
-            ],
-        },
-    });
+    try {
+        const trends = mockDataService.getHistoricalTrends();
+        res.json({ success: true, data: trends });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, error: 'Failed to fetch historical trends' });
+    }
 });
 export default router;
 //# sourceMappingURL=analytics.js.map
